@@ -1,12 +1,13 @@
 #!/bin/bash
 # =========================================================
 # autohotspot — DietPi boot fallback
-# v1.3
+# v1.4
 #
-# Boot-once. Pick the FIRST mode that works, in order:
+# Boot-once. Bring up all non-conflicting interfaces:
 #   1. wlan0  — OS already tried; just check the result
-#   2. usb0   — DHCP uplink (Mac), then link-local (iPad)
-#   3. wlan0  — start own AP (last resort)
+#   2. usb0   — always attempted: DHCP uplink (Mac), or
+#               link-local (iPad) via g_ether reload
+#   3. wlan0  — start own AP if wifi client failed (last resort)
 # =========================================================
 
 set -u
@@ -47,13 +48,11 @@ usb_has_carrier() {
 try_usb0() {
     ip link show "$USBDEV" >/dev/null 2>&1 || return 1
 
-    if ! usb_has_carrier; then
-        log "usb0: no carrier, skipping"
-        return 1
-    fi
-
     # --- 2a: DHCP uplink (Mac) ---------------------------
-    log "usb0: carrier detected, trying DHCP"
+    # No early carrier check — usb0 timing at boot is unreliable.
+    # DHCP will fail fast if nothing's there; g_ether reload below
+    # fixes enumeration for the iPad case regardless of initial state.
+    log "usb0: trying DHCP"
     ip link set "$USBDEV" up 2>/dev/null || true
     timeout "$USB_DHCP_TIMEOUT" dhclient -1 "$USBDEV" >/dev/null 2>&1 || true
 
@@ -128,8 +127,14 @@ start_ap() {
 # --- decide ----------------------------------------------
 log "=== boot check ==="
 
-if try_client; then log "online via wifi"; exit 0; fi
-if try_usb0;   then log "online via usb0"; exit 0; fi
+wifi_ok=false
+try_client && wifi_ok=true
 
-log "wifi and usb0 both failed; starting AP"
-start_ap
+try_usb0 && log "online via usb0"
+
+if $wifi_ok; then
+    log "online via wifi"
+else
+    log "wifi failed; starting AP"
+    start_ap
+fi
