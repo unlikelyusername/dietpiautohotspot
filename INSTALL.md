@@ -91,6 +91,12 @@ sudo /usr/bin/autohotspot
 cat /var/log/autohotspot.log
 ```
 
+If usb0 is already configured from a prior run the script will skip setup
+and log "already has IP". To force a full re-cycle (teardown + DHCP + link-local):
+```bash
+sudo /usr/bin/autohotspot --teardown
+```
+
 Then reboot and check:
 ```bash
 sudo journalctl -b 0 | grep autohotspot

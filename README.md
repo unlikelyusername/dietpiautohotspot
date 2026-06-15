@@ -67,6 +67,18 @@ When both wlan0 and usb0 are up simultaneously, Linux may have two default route
 
 ## Pending tests
 
+### USB manual test
+
+With iPad or Mac connected, run the script manually. If usb0 is already configured
+from a previous run it will skip setup immediately. To force a full re-cycle:
+
+```bash
+sudo /usr/bin/autohotspot --teardown
+sudo awk '/=== autohotspot/{buf=""} {buf=buf"\n"$0} END{print buf}' /var/log/autohotspot.log
+```
+
+Requires `tcpdump` installed (`sudo apt install tcpdump`) for link-local peer discovery.
+
 ### AP manual test
 
 Requires a second SSH path in (Mac USB tethering) before pulling wlan0 down.
@@ -118,6 +130,12 @@ Reboot with no known WiFi in range. Expected: AP comes up, phone connects to `Di
 ---
 
 ## Appendix: changelog
+
+### v1.6 (2026-06-15)
+
+- **Idempotency**: `try_usb0()` now exits immediately if usb0 already has any IP — no wasted DHCP timeout or g_ether reload on re-runs
+- **`--teardown` flag**: `sudo autohotspot --teardown` flushes usb0 and forces a full DHCP → link-local setup cycle (for debugging / manual re-test)
+- Previously a leftover `169.254.1.1/16` from a prior run would cause a false "DHCP assigned" log, flush the working IP, and restart the whole 35s cycle
 
 ### v1.5 (2026-06-15)
 

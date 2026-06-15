@@ -1,7 +1,7 @@
 #!/bin/bash
 # =========================================================
 # autohotspot — DietPi boot fallback
-# v1.5
+# v1.6
 #
 # Boot-once. Bring up all non-conflicting interfaces:
 #   1. wlan0  — OS already tried; just check the result
@@ -19,6 +19,11 @@ USB_DHCP_TIMEOUT=10        # seconds for dhclient to get a lease
 USB_LINKLOCAL_IP="169.254.1.1/16"
 USB_LINKLOCAL_TIMEOUT=20   # max seconds to wait for a link-local peer
 LOG="/var/log/autohotspot.log"
+
+TEARDOWN=false
+for arg in "$@"; do
+    case "$arg" in --teardown) TEARDOWN=true ;; esac
+done
 
 log() { echo "$(date '+%F %T') $*" | tee -a "$LOG"; }
 
@@ -76,6 +81,18 @@ try_usb0() {
     if ! ip link show "$USBDEV" >/dev/null 2>&1; then
         log "usb0: interface does not exist — g_ether not loaded or no gadget support"
         return 1
+    fi
+
+    if has_ip "$USBDEV" && ! $TEARDOWN; then
+        local current_ip
+        current_ip=$(ip -4 addr show "$USBDEV" 2>/dev/null | awk '/inet / {print $2; exit}')
+        log "usb0: already has IP ${current_ip} — skipping setup (--teardown to force)"
+        return 0
+    fi
+
+    if $TEARDOWN; then
+        log "usb0: --teardown requested — ignoring existing IP, running full setup"
+        ip addr flush dev "$USBDEV" 2>/dev/null || true
     fi
 
     log_usb_state "entry"
@@ -250,7 +267,7 @@ start_ap() {
 
 # --- decide ----------------------------------------------
 log "========================================"
-log "=== autohotspot v1.5 — boot check ==="
+log "=== autohotspot v1.6 — boot check ==="
 log "========================================"
 
 wifi_ok=false
