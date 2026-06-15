@@ -1,7 +1,7 @@
 #!/bin/bash
 # =========================================================
 # autohotspot — DietPi boot fallback
-# v1.4
+# v1.5
 #
 # Boot-once. Bring up all non-conflicting interfaces:
 #   1. wlan0  — OS already tried; just check the result
@@ -20,7 +20,22 @@ USB_LINKLOCAL_IP="169.254.1.1/16"
 USB_LINKLOCAL_TIMEOUT=20   # max seconds to wait for a link-local peer
 LOG="/var/log/autohotspot.log"
 
-log() { echo "$(date '+%F %T') $*" >> "$LOG"; }
+log() { echo "$(date '+%F %T') $*" | tee -a "$LOG"; }
+
+run_logged() {
+    # run_logged LABEL cmd [args...]
+    # Runs command, logs exit code and combined output.
+    local label="$1"; shift
+    local out rc
+    out=$("$@" 2>&1)
+    rc=$?
+    if [ -n "$out" ]; then
+        log "${label}: exit=${rc} output=$(echo "$out" | tr '\n' '|')"
+    else
+        log "${label}: exit=${rc} (no output)"
+    fi
+    return $rc
+}
 
 # Not used in the main flow but kept for debugging
 has_internet() {
@@ -33,10 +48,13 @@ has_ip() { ip -4 addr show "$1" 2>/dev/null | grep -q 'inet '; }
 # --- tier 1: wifi client ---------------------------------
 # OS already ran wpa_supplicant and dhclient. Just check the result.
 try_client() {
-    if has_ip "$WIFIDEV"; then
-        log "wifi client already up"
+    local addr
+    addr=$(ip -4 addr show "$WIFIDEV" 2>/dev/null | awk '/inet / {print $2; exit}')
+    if [ -n "$addr" ]; then
+        log "wifi: client up, addr=${addr}"
         return 0
     fi
+    log "wifi: no IP on ${WIFIDEV}"
     return 1
 }
 
@@ -45,96 +63,218 @@ usb_has_carrier() {
     ip link show "$USBDEV" 2>/dev/null | grep -q 'LOWER_UP'
 }
 
+log_usb_state() {
+    local label="$1"
+    local link addr carrier
+    link=$(ip link show "$USBDEV" 2>/dev/null | head -1 || echo "no output")
+    addr=$(ip -4 addr show "$USBDEV" 2>/dev/null | awk '/inet / {print $2}' | head -1)
+    usb_has_carrier && carrier=yes || carrier=no
+    log "usb0 [${label}]: carrier=${carrier} addr=${addr:-none} linkline=${link}"
+}
+
 try_usb0() {
-    ip link show "$USBDEV" >/dev/null 2>&1 || return 1
+    if ! ip link show "$USBDEV" >/dev/null 2>&1; then
+        log "usb0: interface does not exist — g_ether not loaded or no gadget support"
+        return 1
+    fi
+
+    log_usb_state "entry"
 
     # --- 2a: DHCP uplink (Mac) ---------------------------
     # No early carrier check — usb0 timing at boot is unreliable.
     # DHCP will fail fast if nothing's there; g_ether reload below
     # fixes enumeration for the iPad case regardless of initial state.
-    log "usb0: trying DHCP"
-    ip link set "$USBDEV" up 2>/dev/null || true
-    timeout "$USB_DHCP_TIMEOUT" dhclient -1 "$USBDEV" >/dev/null 2>&1 || true
+    log "usb0: bringing link up"
+    if ! ip link set "$USBDEV" up 2>/dev/null; then
+        log "usb0: ip link set up failed — continuing anyway"
+    fi
 
-    if has_ip "$USBDEV"; then
+    log "usb0: running dhclient (timeout=${USB_DHCP_TIMEOUT}s)"
+    run_logged "usb0/dhclient" timeout "$USB_DHCP_TIMEOUT" dhclient -1 -v "$USBDEV" || true
+
+    log_usb_state "after-dhclient"
+
+    local addr_after_dhcp
+    addr_after_dhcp=$(ip -4 addr show "$USBDEV" 2>/dev/null | awk '/inet / {print $2; exit}')
+
+    if [ -n "$addr_after_dhcp" ]; then
+        log "usb0: DHCP assigned ${addr_after_dhcp}"
+        local gateway
         gateway=$(ip route show dev "$USBDEV" | awk '/default/ {print $3; exit}')
-        if [ -n "$gateway" ] && ping -c1 -W2 "$gateway" >/dev/null 2>&1; then
-            log "usb0: DHCP up, gateway ${gateway} reachable"
-            return 0
+        if [ -z "$gateway" ]; then
+            log "usb0: no default route via ${USBDEV} after DHCP — releasing"
+            run_logged "usb0/dhclient-release" dhclient -r "$USBDEV" || true
+            run_logged "usb0/flush" ip addr flush dev "$USBDEV" || true
+        else
+            log "usb0: gateway=${gateway}, pinging"
+            if ping -c2 -W2 "$gateway" >/dev/null 2>&1; then
+                log "usb0: DHCP up — gateway ${gateway} reachable"
+                return 0
+            else
+                log "usb0: gateway ${gateway} present but not pingable — releasing"
+                run_logged "usb0/dhclient-release" dhclient -r "$USBDEV" || true
+                run_logged "usb0/flush" ip addr flush dev "$USBDEV" || true
+            fi
         fi
-        # IP but no pingable gateway — release and fall through to link-local
-        dhclient -r "$USBDEV" >/dev/null 2>&1 || true
-        ip addr flush dev "$USBDEV" 2>/dev/null || true
+    else
+        log "usb0: DHCP produced no IP"
     fi
 
     # --- 2b: link-local (iPad) ---------------------------
     # A simple link bounce isn't enough — iPadOS won't re-enumerate unless
     # the gadget driver is reloaded. rmmod/modprobe forces a fresh USB
     # enumeration, after which iPadOS self-assigns a 169.254.x.x address.
-    log "usb0: DHCP failed, trying link-local"
-    ip neigh flush dev "$USBDEV" 2>/dev/null || true
-    rmmod g_ether 2>/dev/null || true
-    sleep 2
-    modprobe g_ether 2>/dev/null || true
-    sleep 3
-    ip link set "$USBDEV" up 2>/dev/null || true
+    log "usb0: trying link-local — flushing neighbours"
+    run_logged "usb0/neigh-flush" ip neigh flush dev "$USBDEV" || true
+
+    log "usb0: unloading g_ether"
+    if run_logged "usb0/rmmod" rmmod g_ether; then
+        log "usb0: g_ether unloaded, sleeping 2s"
+        sleep 2
+        log "usb0: reloading g_ether"
+        if run_logged "usb0/modprobe" modprobe g_ether; then
+            log "usb0: g_ether reloaded, sleeping 3s for enumeration"
+            sleep 3
+        else
+            log "usb0: modprobe g_ether failed — link-local unlikely to work"
+        fi
+    else
+        log "usb0: rmmod g_ether failed (not loaded, or built-in) — skipping reload"
+    fi
+
+    log "usb0: bringing link up after reload"
+    if ! ip link set "$USBDEV" up 2>/dev/null; then
+        log "usb0: ip link set up failed after reload"
+    fi
+
+    log_usb_state "after-reload"
 
     if ! usb_has_carrier; then
-        log "usb0: nothing re-enumerated after module reload"
+        log "usb0: no carrier after module reload — no device enumerated"
         return 1
     fi
 
-    ip addr add "$USB_LINKLOCAL_IP" dev "$USBDEV" 2>/dev/null || true
+    log "usb0: carrier present — assigning ${USB_LINKLOCAL_IP}"
+    if ! ip addr add "$USB_LINKLOCAL_IP" dev "$USBDEV" 2>/dev/null; then
+        log "usb0: failed to assign ${USB_LINKLOCAL_IP} (already set?)"
+    fi
 
-    local i=0
-    while [ "$i" -lt "$USB_LINKLOCAL_TIMEOUT" ]; do
-        peer=$(ip neigh show dev "$USBDEV" 2>/dev/null \
-               | awk '/169\.254\./ {print $1}' \
-               | grep -v "^169\.254\.1\.1$" \
-               | head -1)
-        if [ -n "$peer" ] && ping -c1 -W1 -I "$USBDEV" "$peer" >/dev/null 2>&1; then
+    # ip neigh is passive — it only has entries after we've already talked
+    # to the peer. The iPad sends ARP announcements during link-local setup
+    # (RFC 5227), so listen for those via tcpdump. head -1 causes SIGPIPE
+    # which kills the pipeline early once a peer is found; timeout is the
+    # fallback if nothing appears.
+    local peer=""
+    if command -v tcpdump >/dev/null 2>&1; then
+        log "usb0: listening for ARP on ${USBDEV} via tcpdump (${USB_LINKLOCAL_TIMEOUT}s)"
+        peer=$(timeout "$USB_LINKLOCAL_TIMEOUT" \
+                   tcpdump -i "$USBDEV" -n -l arp 2>/dev/null \
+               | awk '/169\.254\./{
+                   for(i=1;i<=NF;i++){
+                       if($i ~ /^169\.254\.[0-9]+\.[0-9]+$/ && $i != "169.254.1.1"){
+                           print $i; exit
+                       }
+                   }
+               }' | head -1)
+        log "usb0: tcpdump scan complete, peer=${peer:-none}"
+    else
+        log "usb0: tcpdump not found — falling back to ip neigh poll (${USB_LINKLOCAL_TIMEOUT}s)"
+        local i=0
+        while [ "$i" -lt "$USB_LINKLOCAL_TIMEOUT" ]; do
+            local neigh_out
+            neigh_out=$(ip neigh show dev "$USBDEV" 2>/dev/null)
+            log "usb0: neigh at ${i}s: ${neigh_out:-empty}"
+            peer=$(echo "$neigh_out" \
+                   | awk '/169\.254\./ {print $1}' \
+                   | grep -v "^169\.254\.1\.1$" \
+                   | head -1)
+            [ -n "$peer" ] && break
+            sleep 1
+            i=$((i+1))
+        done
+        log "usb0: neigh poll done (${i}s), peer=${peer:-none}"
+    fi
+
+    if [ -n "$peer" ]; then
+        log "usb0: pinging ${peer}"
+        if ping -c2 -W2 -I "$USBDEV" "$peer" >/dev/null 2>&1; then
             log "usb0: link-local peer ${peer} reachable"
             return 0
+        else
+            log "usb0: peer ${peer} found via ARP but not pingable"
         fi
-        sleep 1
-        i=$((i+1))
-    done
+    fi
 
-    log "usb0: no link-local peer found"
-    ip addr flush dev "$USBDEV" 2>/dev/null || true
+    log "usb0: no link-local peer after ${USB_LINKLOCAL_TIMEOUT}s"
+    log_usb_state "link-local-timeout"
+    run_logged "usb0/flush-ll" ip addr flush dev "$USBDEV" || true
     return 1
 }
 
 # --- tier 3: own AP --------------------------------------
 stop_client() {
-    ifdown "$WIFIDEV" >/dev/null 2>&1 || true
+    run_logged "ap/ifdown" ifdown "$WIFIDEV" || true
     if [ -f "/run/wpa_supplicant.${WIFIDEV}.pid" ]; then
-        kill "$(cat /run/wpa_supplicant.${WIFIDEV}.pid)" 2>/dev/null || true
+        local pid
+        pid=$(cat "/run/wpa_supplicant.${WIFIDEV}.pid")
+        log "ap: killing wpa_supplicant pid=${pid}"
+        kill "$pid" 2>/dev/null || log "ap: kill wpa_supplicant failed (already gone?)"
     fi
-    ip addr flush dev "$WIFIDEV" 2>/dev/null || true
+    run_logged "ap/flush" ip addr flush dev "$WIFIDEV" || true
 }
 
 start_ap() {
-    log "starting AP"
+    log "AP: starting (wlan0 client failed)"
     stop_client
-    ip link set "$WIFIDEV" up
-    ip addr add "${AP_IP}/24" dev "$WIFIDEV"
-    systemctl start hostapd || { log "FATAL: hostapd failed"; exit 1; }
-    systemctl start dnsmasq || { log "FATAL: dnsmasq failed; stopping hostapd"; systemctl stop hostapd; exit 1; }
-    log "AP up at ${AP_IP}"
+    if ! ip link set "$WIFIDEV" up; then
+        log "AP: FATAL — could not bring ${WIFIDEV} up"
+        exit 1
+    fi
+    if ! ip addr add "${AP_IP}/24" dev "$WIFIDEV"; then
+        log "AP: FATAL — could not assign ${AP_IP}/24 to ${WIFIDEV}"
+        exit 1
+    fi
+    log "AP: starting hostapd"
+    if ! run_logged "ap/hostapd" systemctl start hostapd; then
+        log "AP: FATAL — hostapd failed to start"
+        exit 1
+    fi
+    log "AP: starting dnsmasq"
+    if ! run_logged "ap/dnsmasq" systemctl start dnsmasq; then
+        log "AP: FATAL — dnsmasq failed to start; stopping hostapd"
+        systemctl stop hostapd
+        exit 1
+    fi
+    log "AP: up at ${AP_IP}"
 }
 
 # --- decide ----------------------------------------------
-log "=== boot check ==="
+log "========================================"
+log "=== autohotspot v1.5 — boot check ==="
+log "========================================"
 
 wifi_ok=false
 try_client && wifi_ok=true
 
-try_usb0 && log "online via usb0"
+usb_ok=false
+try_usb0 && usb_ok=true
 
 if $wifi_ok; then
-    log "online via wifi"
+    log "result: online via wifi"
 else
-    log "wifi failed; starting AP"
+    log "result: wifi failed — starting AP"
     start_ap
 fi
+
+if $usb_ok; then
+    log "result: usb0 up"
+else
+    log "result: usb0 not available"
+fi
+
+# Final interface summary
+log "--- interface summary ---"
+log "  wlan0: $(ip -4 addr show wlan0 2>/dev/null | awk '/inet / {print $2}' | head -1 || echo 'no IP')"
+log "  usb0:  $(ip -4 addr show usb0  2>/dev/null | awk '/inet / {print $2}' | head -1 || echo 'no IP')"
+ip route show 2>/dev/null | while IFS= read -r r; do log "  route: ${r}"; done
+log "========================================"

@@ -95,9 +95,11 @@ Reboot with a known WiFi network in range.
 ```bash
 sudo journalctl -b 0 | grep -E "(autohotspot|Startup finished)"
 sudo cat /var/log/autohotspot.log
+# or tail just the last run:
+sudo awk '/=== autohotspot/{buf=""} {buf=buf"\n"$0} END{print buf}' /var/log/autohotspot.log
 ```
 
-Expected: "wifi client already up", boot-to-SSH under 35 seconds.
+Expected: `wifi: client up, addr=...`, boot-to-SSH under 35 seconds.
 
 ### Boot test — AP fallback
 
@@ -116,6 +118,15 @@ Reboot with no known WiFi in range. Expected: AP comes up, phone connects to `Di
 ---
 
 ## Appendix: changelog
+
+### v1.5 (2026-06-15)
+
+- Verbose logging throughout: every step logs its result, exit codes, and interface state
+- `run_logged` helper captures stdout+stderr of subcommands into the log
+- `log_usb_state` snapshots carrier/addr/link line at key points
+- Link-local peer discovery replaced: `ip neigh` poll was passive (empty until we'd already talked to the peer); now uses `tcpdump` to capture ARP announcements (RFC 5227) which the peer sends during its own link-local setup. `head -1` causes SIGPIPE → pipeline exits early when peer found. Falls back to neigh poll if tcpdump absent.
+- All `&&/||` chains in error paths replaced with explicit `if/then`
+- Boot run header/footer with full interface + route summary
 
 ### v1.4 (2026-06-15)
 
