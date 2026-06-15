@@ -55,14 +55,6 @@ This always works regardless of what's around. It's the guaranteed last resort.
 
 ---
 
-## Open questions
-
-1. **Does USB link-local work with iPhone?** Not tested. Same cable caveat probably applies.
-
-2. **Where does `10.55.0.1/24` come from on usb0?** Appeared during 2026-06-15 testing without being assigned by the script. Source unknown — possibly a stale dhclient lease replay.
-
----
-
 ## Pending tests
 
 ### AP manual test
