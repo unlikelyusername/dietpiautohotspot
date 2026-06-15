@@ -1,10 +1,10 @@
 # autohotspot
 
-Boot-once networking fallback for a headless DietPi (Pi 5). On every boot, picks the first mode that works:
+Boot-once networking for a headless DietPi (Pi 5). On every boot, brings up all non-conflicting interfaces:
 
 1. **WiFi client** — join a known network (OS handles this; script checks the result)
-2. **USB uplink** — DHCP from a connected Mac, or link-local to a connected iPad
-3. **AP fallback** — own hotspot on wlan0 so the Pi is always reachable
+2. **USB uplink** — always attempted: DHCP from a connected Mac, or link-local to a connected iPad
+3. **AP fallback** — own hotspot on wlan0, only if wifi client failed (they conflict)
 
 **Log:** `/var/log/autohotspot.log`
 
@@ -12,7 +12,7 @@ Boot-once networking fallback for a headless DietPi (Pi 5). On every boot, picks
 
 ## Files
 
-- `autohotspot` — the script (v1.3)
+- `autohotspot` — the script (v1.4)
 - `autohotspot.service` — systemd unit
 - `INSTALL.md` — complete setup guide for a fresh system
 
@@ -26,32 +26,42 @@ Boot-once networking fallback for a headless DietPi (Pi 5). On every boot, picks
 
 ## How it works
 
-### Tier 1 — WiFi client
+### Step 1 — WiFi client
 
-DietPi's own networking runs wpa_supplicant and dhclient on wlan0 before the service starts. The script just checks `has_ip wlan0` and exits if it's connected. No retry, no teardown.
+DietPi's own networking runs wpa_supplicant and dhclient on wlan0 before the service starts. The script just checks `has_ip wlan0`. No retry, no teardown.
 
-### Tier 2 — USB (two sub-tiers)
+### Step 2 — USB (always attempted, two sub-steps)
 
-The Pi presents as a USB Ethernet gadget (`g_ether`) on its USB-C port. Both sub-tiers are tried before falling through to AP.
+The Pi presents as a USB Ethernet gadget (`g_ether`) on its USB-C port. This runs regardless of whether wifi succeeded.
+
+There is no early carrier check — usb0 timing at boot is unreliable (the kernel creates the interface before it's properly enumerated). DHCP failure is the signal to move to link-local.
 
 **2a — DHCP uplink (Mac)**
 Mac has Internet Sharing on. Script runs `dhclient` with a 10-second timeout. If an IP and a pingable gateway appear, done.
 
 **2b — Link-local (iPad)**
-If DHCP fails, script reloads the USB gadget driver (`rmmod g_ether; modprobe g_ether`). This forces a fresh USB enumeration — iPadOS then self-assigns a `169.254.x.x` address within ~15 seconds. Script assigns `169.254.1.1/16` on its end and polls the neighbour table for a pingable peer. If one appears, done.
+If DHCP fails, script reloads the USB gadget driver (`rmmod g_ether; modprobe g_ether`). This forces a fresh USB enumeration — iPadOS detects link-down/link-up, retries DHCP (fails, no server), then self-assigns a `169.254.x.x` address. Script assigns `169.254.1.1/16` on its end and polls the neighbour table for a pingable peer. If one appears within 20 seconds, done.
 
-If nothing responds after 20 seconds (battery pack, nothing connected), falls through to AP.
+If nothing responds (battery pack, nothing connected), usb0 is left unconfigured and the script continues.
 
 **Cable matters (Pi 5 specific):**
 Smart USB-C cables (Apple braided, Thunderbolt, USB4, e-marked) negotiate Power Delivery on the CC pin and silently break Pi 5 gadget TX. Use a cheap USB-C cable (no e-marker) or a USB-C → USB-A → USB-C adapter chain. Confirmed working with a basic Anker C-C cable.
 
 iPad Pro M4 only, if a dumb cable still fails: set `PSU_MAX_CURRENT=3000` in Pi EEPROM.
 
-### Tier 3 — AP fallback
+### Step 3 — AP fallback (only if wifi client failed)
 
-Tears down wlan0 client, brings wlan0 up in AP mode at `192.168.99.1/24`, starts hostapd and dnsmasq. SSID: `DietPi-Fallback`.
+If wlan0 didn't get a client IP, tears down wlan0, brings it up in AP mode at `192.168.99.1/24`, starts hostapd and dnsmasq. SSID: `DietPi-Fallback`. This is skipped if wifi client succeeded (they conflict on the same interface).
 
-This always works regardless of what's around. It's the guaranteed last resort.
+---
+
+## Future extension: multi-interface routing
+
+When both wlan0 and usb0 are up simultaneously, Linux may have two default routes. Desired behaviour (not yet implemented):
+
+- If usb0 got DHCP (Mac, has internet): pick the "better" default route, or set metrics so wlan0 wins if both have internet.
+- If usb0 is link-local (iPad, no internet): ensure the default route stays on wlan0; don't let the 169.254.x.x interface steal it.
+- Policy routing (ip rule / ip route tables) would allow both paths to work independently for their respective peers.
 
 ---
 
@@ -106,6 +116,12 @@ Reboot with no known WiFi in range. Expected: AP comes up, phone connects to `Di
 ---
 
 ## Appendix: changelog
+
+### v1.4 (2026-06-15)
+
+- Removed early carrier check in `try_usb0()` — usb0 timing at boot is unreliable; DHCP failure is the correct signal to fall through to link-local
+- `try_usb0()` now always runs regardless of wifi client result — both interfaces come up if both work
+- AP fallback now only starts if wlan0 client failed (previously could skip usb0 entirely if wifi was up)
 
 ### v1.3 (2026-06-15)
 
