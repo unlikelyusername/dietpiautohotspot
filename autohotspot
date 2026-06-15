@@ -1,0 +1,135 @@
+#!/bin/bash
+# =========================================================
+# autohotspot — DietPi boot fallback
+# v1.3
+#
+# Boot-once. Pick the FIRST mode that works, in order:
+#   1. wlan0  — OS already tried; just check the result
+#   2. usb0   — DHCP uplink (Mac), then link-local (iPad)
+#   3. wlan0  — start own AP (last resort)
+# =========================================================
+
+set -u
+
+WIFIDEV="wlan0"
+USBDEV="usb0"
+AP_IP="192.168.99.1"
+USB_DHCP_TIMEOUT=10        # seconds for dhclient to get a lease
+USB_LINKLOCAL_IP="169.254.1.1/16"
+USB_LINKLOCAL_TIMEOUT=20   # max seconds to wait for a link-local peer
+LOG="/var/log/autohotspot.log"
+
+log() { echo "$(date '+%F %T') $*" >> "$LOG"; }
+
+# Not used in the main flow but kept for debugging
+has_internet() {
+    ip route | grep -q '^default ' || return 1
+    ping -c1 -W2 1.1.1.1 >/dev/null 2>&1
+}
+
+has_ip() { ip -4 addr show "$1" 2>/dev/null | grep -q 'inet '; }
+
+# --- tier 1: wifi client ---------------------------------
+# OS already ran wpa_supplicant and dhclient. Just check the result.
+try_client() {
+    if has_ip "$WIFIDEV"; then
+        log "wifi client already up"
+        return 0
+    fi
+    return 1
+}
+
+# --- tier 2: usb0 ----------------------------------------
+usb_has_carrier() {
+    ip link show "$USBDEV" 2>/dev/null | grep -q 'LOWER_UP'
+}
+
+try_usb0() {
+    ip link show "$USBDEV" >/dev/null 2>&1 || return 1
+
+    if ! usb_has_carrier; then
+        log "usb0: no carrier, skipping"
+        return 1
+    fi
+
+    # --- 2a: DHCP uplink (Mac) ---------------------------
+    log "usb0: carrier detected, trying DHCP"
+    ip link set "$USBDEV" up 2>/dev/null || true
+    timeout "$USB_DHCP_TIMEOUT" dhclient -1 "$USBDEV" >/dev/null 2>&1 || true
+
+    if has_ip "$USBDEV"; then
+        gateway=$(ip route show dev "$USBDEV" | awk '/default/ {print $3; exit}')
+        if [ -n "$gateway" ] && ping -c1 -W2 "$gateway" >/dev/null 2>&1; then
+            log "usb0: DHCP up, gateway ${gateway} reachable"
+            return 0
+        fi
+        # IP but no pingable gateway — release and fall through to link-local
+        dhclient -r "$USBDEV" >/dev/null 2>&1 || true
+        ip addr flush dev "$USBDEV" 2>/dev/null || true
+    fi
+
+    # --- 2b: link-local (iPad) ---------------------------
+    # A simple link bounce isn't enough — iPadOS won't re-enumerate unless
+    # the gadget driver is reloaded. rmmod/modprobe forces a fresh USB
+    # enumeration, after which iPadOS self-assigns a 169.254.x.x address.
+    log "usb0: DHCP failed, trying link-local"
+    ip neigh flush dev "$USBDEV" 2>/dev/null || true
+    rmmod g_ether 2>/dev/null || true
+    sleep 2
+    modprobe g_ether 2>/dev/null || true
+    sleep 3
+    ip link set "$USBDEV" up 2>/dev/null || true
+
+    if ! usb_has_carrier; then
+        log "usb0: nothing re-enumerated after module reload"
+        return 1
+    fi
+
+    ip addr add "$USB_LINKLOCAL_IP" dev "$USBDEV" 2>/dev/null || true
+
+    local i=0
+    while [ "$i" -lt "$USB_LINKLOCAL_TIMEOUT" ]; do
+        peer=$(ip neigh show dev "$USBDEV" 2>/dev/null \
+               | awk '/169\.254\./ {print $1}' \
+               | grep -v "^169\.254\.1\.1$" \
+               | head -1)
+        if [ -n "$peer" ] && ping -c1 -W1 -I "$USBDEV" "$peer" >/dev/null 2>&1; then
+            log "usb0: link-local peer ${peer} reachable"
+            return 0
+        fi
+        sleep 1
+        i=$((i+1))
+    done
+
+    log "usb0: no link-local peer found"
+    ip addr flush dev "$USBDEV" 2>/dev/null || true
+    return 1
+}
+
+# --- tier 3: own AP --------------------------------------
+stop_client() {
+    ifdown "$WIFIDEV" >/dev/null 2>&1 || true
+    if [ -f "/run/wpa_supplicant.${WIFIDEV}.pid" ]; then
+        kill "$(cat /run/wpa_supplicant.${WIFIDEV}.pid)" 2>/dev/null || true
+    fi
+    ip addr flush dev "$WIFIDEV" 2>/dev/null || true
+}
+
+start_ap() {
+    log "starting AP"
+    stop_client
+    ip link set "$WIFIDEV" up
+    ip addr add "${AP_IP}/24" dev "$WIFIDEV"
+    systemctl start hostapd || { log "FATAL: hostapd failed"; exit 1; }
+    systemctl start dnsmasq || { log "FATAL: dnsmasq failed; stopping hostapd"; systemctl stop hostapd; exit 1; }
+    log "AP up at ${AP_IP}"
+}
+
+# --- decide ----------------------------------------------
+log "=== boot check ==="
+
+if try_client; then log "online via wifi"; exit 0; fi
+if try_usb0;   then log "online via usb0"; exit 0; fi
+
+log "wifi and usb0 both failed; starting AP"
+start_ap
