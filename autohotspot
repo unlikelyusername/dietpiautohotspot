@@ -1,7 +1,7 @@
 #!/bin/bash
 # =========================================================
 # autohotspot — DietPi boot fallback
-# v1.6
+# v1.7
 #
 # Boot-once. Bring up all non-conflicting interfaces:
 #   1. wlan0  — OS already tried; just check the result
@@ -25,7 +25,7 @@ for arg in "$@"; do
     case "$arg" in --teardown) TEARDOWN=true ;; esac
 done
 
-log() { echo "$(date '+%F %T') $*" | tee -a "$LOG"; }
+log() { echo "$(date '+%F %T') $*" >> "$LOG"; }
 
 run_logged() {
     # run_logged LABEL cmd [args...]
@@ -115,24 +115,8 @@ try_usb0() {
     addr_after_dhcp=$(ip -4 addr show "$USBDEV" 2>/dev/null | awk '/inet / {print $2; exit}')
 
     if [ -n "$addr_after_dhcp" ]; then
-        log "usb0: DHCP assigned ${addr_after_dhcp}"
-        local gateway
-        gateway=$(ip route show dev "$USBDEV" | awk '/default/ {print $3; exit}')
-        if [ -z "$gateway" ]; then
-            log "usb0: no default route via ${USBDEV} after DHCP — releasing"
-            run_logged "usb0/dhclient-release" dhclient -r "$USBDEV" || true
-            run_logged "usb0/flush" ip addr flush dev "$USBDEV" || true
-        else
-            log "usb0: gateway=${gateway}, pinging"
-            if ping -c2 -W2 "$gateway" >/dev/null 2>&1; then
-                log "usb0: DHCP up — gateway ${gateway} reachable"
-                return 0
-            else
-                log "usb0: gateway ${gateway} present but not pingable — releasing"
-                run_logged "usb0/dhclient-release" dhclient -r "$USBDEV" || true
-                run_logged "usb0/flush" ip addr flush dev "$USBDEV" || true
-            fi
-        fi
+        log "usb0: DHCP up, addr=${addr_after_dhcp}"
+        return 0
     else
         log "usb0: DHCP produced no IP"
     fi
@@ -267,7 +251,7 @@ start_ap() {
 
 # --- decide ----------------------------------------------
 log "========================================"
-log "=== autohotspot v1.6 — boot check ==="
+log "=== autohotspot v1.7 — boot check ==="
 log "========================================"
 
 wifi_ok=false

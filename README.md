@@ -131,6 +131,11 @@ Reboot with no known WiFi in range. Expected: AP comes up, phone connects to `Di
 
 ## Appendix: changelog
 
+### v1.7 (2026-06-17)
+
+- Fix double-logging: `log()` was using `tee -a` (writes to file + stdout) while the systemd service had `StandardOutput=append` — every line appeared twice. Now writes directly to `$LOG` only.
+- Fix DHCP success check: removed default-route requirement. macOS USB gadget DHCP assigns an IP but doesn't send a default route option — the old code rejected a working connection. Now: dhclient exit=0 + has IP = success.
+
 ### v1.6 (2026-06-15)
 
 - **Idempotency**: `try_usb0()` now exits immediately if usb0 already has any IP — no wasted DHCP timeout or g_ether reload on re-runs
