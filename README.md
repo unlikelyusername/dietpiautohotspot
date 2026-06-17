@@ -12,7 +12,7 @@ Boot-once networking for a headless DietPi (Pi 5). On every boot, brings up all 
 
 ## Files
 
-- `autohotspot` — the script (v1.7)
+- `autohotspot` — the script (v1.8)
 - `autohotspot.service` — systemd unit
 - `install.sh` — one-command installer
 - `INSTALL.md` — setup guide
@@ -22,8 +22,6 @@ Boot-once networking for a headless DietPi (Pi 5). On every boot, brings up all 
 - `/etc/hostapd/hostapd.conf`
 - `/etc/dnsmasq.conf`
 - `/etc/wpa_supplicant/wpa_supplicant.conf` (managed by dietpi-config)
-
-`tcpdump` improves link-local peer discovery (iPad path) but is not required — the script falls back to `ip neigh` polling if absent.
 
 ---
 
@@ -43,7 +41,7 @@ There is no early carrier check — usb0 timing at boot is unreliable (the kerne
 Mac has Internet Sharing on. Script runs `dhclient` with a 10-second timeout. If dhclient succeeds and usb0 has an IP, done.
 
 **2b — Link-local (iPad / Mac without Internet Sharing)**
-If DHCP fails, script reloads the USB gadget driver (`rmmod g_ether; modprobe g_ether`). This forces a fresh USB enumeration — the peer retries DHCP (fails, no server), then self-assigns a `169.254.x.x` address. Script assigns `169.254.1.1/16` on its end and listens for ARP announcements via `tcpdump` (falls back to `ip neigh` polling if tcpdump absent). If a pingable peer appears within 20 seconds, done.
+If DHCP fails, script reloads the USB gadget driver (`rmmod g_ether; modprobe g_ether`). This forces a fresh USB enumeration, after which the peer self-assigns a `169.254.x.x` address (RFC 5227). If carrier is then present, the script assigns its own static `169.254.1.1/16` and is done. It does **not** try to discover or ping the peer — on a point-to-point USB link the peer connects to the Pi at the known `169.254.1.1`, so there's nothing to discover. No carrier means nothing is connected, and usb0 is left unconfigured.
 
 If nothing responds (battery pack, nothing connected), usb0 is left unconfigured and the script continues.
 
@@ -79,8 +77,6 @@ from a previous run it will skip setup immediately. To force a full re-cycle:
 sudo /usr/bin/autohotspot --teardown
 sudo awk '/=== autohotspot/{buf=""} {buf=buf"\n"$0} END{print buf}' /var/log/autohotspot.log
 ```
-
-Requires `tcpdump` installed (`sudo apt install tcpdump`) for link-local peer discovery.
 
 ### AP manual test
 
@@ -130,6 +126,13 @@ Reboot with no known WiFi in range. Expected: AP comes up, phone connects to `Di
 
 ## Appendix: changelog
 
+### v1.8 (2026-06-17)
+
+- **Stop trying to discover/verify the USB peer.** The link-local path no longer scans with `tcpdump`, polls `ip neigh`, or pings the peer. On a point-to-point USB link the peer connects to the Pi at the static `169.254.1.1`, so there is nothing to discover. Success is now simply: carrier present → assign `169.254.1.1/16`.
+- Removed the flush-on-timeout that could strip a working `169.254.1.1/16` when the old 20s discovery window expired (broke iPad Air without tcpdump).
+- `tcpdump` is no longer used or referenced anywhere. Removed `USB_LINKLOCAL_TIMEOUT`.
+- The g_ether `rmmod`/`modprobe` reload is kept — the iPad won't self-assign an IPv4 link-local address without a fresh re-enumeration.
+
 ### v1.7 (2026-06-17)
 
 - Fix double-logging: `log()` was using `tee -a` (writes to file + stdout) while the systemd service had `StandardOutput=append` — every line appeared twice. Now writes directly to `$LOG` only.
@@ -146,7 +149,7 @@ Reboot with no known WiFi in range. Expected: AP comes up, phone connects to `Di
 - Verbose logging throughout: every step logs its result, exit codes, and interface state
 - `run_logged` helper captures stdout+stderr of subcommands into the log
 - `log_usb_state` snapshots carrier/addr/link line at key points
-- Link-local peer discovery replaced: `ip neigh` poll was passive (empty until we'd already talked to the peer); now uses `tcpdump` to capture ARP announcements (RFC 5227) which the peer sends during its own link-local setup. `head -1` causes SIGPIPE → pipeline exits early when peer found. Falls back to neigh poll if tcpdump absent.
+- Link-local peer discovery via `tcpdump` (later removed entirely in v1.8 — see above)
 - All `&&/||` chains in error paths replaced with explicit `if/then`
 - Boot run header/footer with full interface + route summary
 

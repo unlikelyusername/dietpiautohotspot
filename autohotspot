@@ -1,7 +1,7 @@
 #!/bin/bash
 # =========================================================
 # autohotspot — DietPi boot fallback
-# v1.7
+# v1.8
 #
 # Boot-once. Bring up all non-conflicting interfaces:
 #   1. wlan0  — OS already tried; just check the result
@@ -17,7 +17,6 @@ USBDEV="usb0"
 AP_IP="192.168.99.1"
 USB_DHCP_TIMEOUT=10        # seconds for dhclient to get a lease
 USB_LINKLOCAL_IP="169.254.1.1/16"
-USB_LINKLOCAL_TIMEOUT=20   # max seconds to wait for a link-local peer
 LOG="/var/log/autohotspot.log"
 
 TEARDOWN=false
@@ -125,14 +124,13 @@ try_usb0() {
         log "usb0: DHCP produced no IP"
     fi
 
-    # --- 2b: link-local (iPad) ---------------------------
-    # A simple link bounce isn't enough — iPadOS won't re-enumerate unless
-    # the gadget driver is reloaded. rmmod/modprobe forces a fresh USB
-    # enumeration, after which iPadOS self-assigns a 169.254.x.x address.
-    log "usb0: trying link-local — flushing neighbours"
-    run_logged "usb0/neigh-flush" ip neigh flush dev "$USBDEV" || true
-
-    log "usb0: unloading g_ether"
+    # --- 2b: link-local (iPad / Mac without Internet Sharing) ---
+    # iPadOS won't self-assign a 169.254.x.x address unless the gadget driver
+    # is reloaded — a plain link bounce isn't enough. rmmod/modprobe forces a
+    # fresh USB enumeration, after which the peer runs RFC 5227 and claims an
+    # address. (We could instead use IPv6 link-local, which needs no reload —
+    # but we want IPv4 link-local for now.)
+    log "usb0: reloading g_ether for link-local"
     if run_logged "usb0/rmmod" rmmod g_ether; then
         log "usb0: g_ether unloaded, sleeping 2s"
         sleep 2
@@ -144,7 +142,7 @@ try_usb0() {
             log "usb0: modprobe g_ether failed — link-local unlikely to work"
         fi
     else
-        log "usb0: rmmod g_ether failed (not loaded, or built-in) — skipping reload"
+        log "usb0: rmmod g_ether failed (not loaded/built-in) — skipping reload"
     fi
 
     log "usb0: bringing link up after reload"
@@ -154,66 +152,20 @@ try_usb0() {
 
     log_usb_state "after-reload"
 
+    # Carrier is the gate. No carrier = nothing enumerated → bail (state already
+    # logged). We do NOT discover or verify the peer — it reaches us at the
+    # static link-local address on its own.
     if ! usb_has_carrier; then
-        log "usb0: no carrier after module reload — no device enumerated"
+        log "usb0: no carrier after reload — nothing connected"
         return 1
     fi
 
     log "usb0: carrier present — assigning ${USB_LINKLOCAL_IP}"
     if ! ip addr add "$USB_LINKLOCAL_IP" dev "$USBDEV" 2>/dev/null; then
-        log "usb0: failed to assign ${USB_LINKLOCAL_IP} (already set?)"
+        log "usb0: ${USB_LINKLOCAL_IP} already set"
     fi
-
-    # ip neigh is passive — it only has entries after we've already talked
-    # to the peer. The iPad sends ARP announcements during link-local setup
-    # (RFC 5227), so listen for those via tcpdump. head -1 causes SIGPIPE
-    # which kills the pipeline early once a peer is found; timeout is the
-    # fallback if nothing appears.
-    local peer=""
-    if command -v tcpdump >/dev/null 2>&1; then
-        log "usb0: listening for ARP on ${USBDEV} via tcpdump (${USB_LINKLOCAL_TIMEOUT}s)"
-        peer=$(timeout "$USB_LINKLOCAL_TIMEOUT" \
-                   tcpdump -i "$USBDEV" -n -l arp 2>/dev/null \
-               | awk '/169\.254\./{
-                   for(i=1;i<=NF;i++){
-                       if($i ~ /^169\.254\.[0-9]+\.[0-9]+$/ && $i != "169.254.1.1"){
-                           print $i; exit
-                       }
-                   }
-               }' | head -1)
-        log "usb0: tcpdump scan complete, peer=${peer:-none}"
-    else
-        log "usb0: tcpdump not found — falling back to ip neigh poll (${USB_LINKLOCAL_TIMEOUT}s)"
-        local i=0
-        while [ "$i" -lt "$USB_LINKLOCAL_TIMEOUT" ]; do
-            local neigh_out
-            neigh_out=$(ip neigh show dev "$USBDEV" 2>/dev/null)
-            log "usb0: neigh at ${i}s: ${neigh_out:-empty}"
-            peer=$(echo "$neigh_out" \
-                   | awk '/169\.254\./ {print $1}' \
-                   | grep -v "^169\.254\.1\.1$" \
-                   | head -1)
-            [ -n "$peer" ] && break
-            sleep 1
-            i=$((i+1))
-        done
-        log "usb0: neigh poll done (${i}s), peer=${peer:-none}"
-    fi
-
-    if [ -n "$peer" ]; then
-        log "usb0: pinging ${peer}"
-        if ping -c2 -W2 -I "$USBDEV" "$peer" >/dev/null 2>&1; then
-            log "usb0: link-local peer ${peer} reachable"
-            return 0
-        else
-            log "usb0: peer ${peer} found via ARP but not pingable"
-        fi
-    fi
-
-    log "usb0: no link-local peer after ${USB_LINKLOCAL_TIMEOUT}s"
-    log_usb_state "link-local-timeout"
-    run_logged "usb0/flush-ll" ip addr flush dev "$USBDEV" || true
-    return 1
+    log "usb0: link-local ${USB_LINKLOCAL_IP} assigned — peer reaches us here"
+    return 0
 }
 
 # --- tier 3: own AP --------------------------------------
@@ -255,7 +207,7 @@ start_ap() {
 
 # --- decide ----------------------------------------------
 log "========================================"
-log "=== autohotspot v1.7 — boot check ==="
+log "=== autohotspot v1.8 — boot check ==="
 log "========================================"
 
 wifi_ok=false
