@@ -40,10 +40,10 @@ The Pi presents as a USB Ethernet gadget (`g_ether`) on its USB-C port. This run
 There is no early carrier check — usb0 timing at boot is unreliable (the kernel creates the interface before it's properly enumerated). DHCP failure is the signal to move to link-local.
 
 **2a — DHCP uplink (Mac)**
-Mac has Internet Sharing on. Script runs `dhclient` with a 10-second timeout. If an IP and a pingable gateway appear, done.
+Mac has Internet Sharing on. Script runs `dhclient` with a 10-second timeout. If dhclient succeeds and usb0 has an IP, done.
 
-**2b — Link-local (iPad)**
-If DHCP fails, script reloads the USB gadget driver (`rmmod g_ether; modprobe g_ether`). This forces a fresh USB enumeration — iPadOS detects link-down/link-up, retries DHCP (fails, no server), then self-assigns a `169.254.x.x` address. Script assigns `169.254.1.1/16` on its end and polls the neighbour table for a pingable peer. If one appears within 20 seconds, done.
+**2b — Link-local (iPad / Mac without Internet Sharing)**
+If DHCP fails, script reloads the USB gadget driver (`rmmod g_ether; modprobe g_ether`). This forces a fresh USB enumeration — the peer retries DHCP (fails, no server), then self-assigns a `169.254.x.x` address. Script assigns `169.254.1.1/16` on its end and listens for ARP announcements via `tcpdump` (falls back to `ip neigh` polling if tcpdump absent). If a pingable peer appears within 20 seconds, done.
 
 If nothing responds (battery pack, nothing connected), usb0 is left unconfigured and the script continues.
 
@@ -116,11 +116,18 @@ Reboot with no known WiFi in range. Expected: AP comes up, phone connects to `Di
 
 **`update_config=1` in `wpa_supplicant.conf`** — allows wpa_supplicant to overwrite the config. Consider setting to `0` once stable.
 
-**`tcpdump`** — installed during USB testing. Not a script dependency but useful for debugging.
-
----
-
 ## Appendix: changelog
+
+### v1.7 (2026-06-17)
+
+- Fix double-logging: `log()` was using `tee -a` (writes to file + stdout) while the systemd service had `StandardOutput=append` — every line appeared twice. Now writes directly to `$LOG` only.
+- Fix DHCP success check: removed default-route requirement. macOS USB gadget DHCP assigns an IP but doesn't send a default route option — the old code rejected a working connection. Now: dhclient exit=0 + has IP = success.
+
+### v1.6 (2026-06-15)
+
+- **Idempotency**: `try_usb0()` now exits immediately if usb0 already has any IP — no wasted DHCP timeout or g_ether reload on re-runs
+- **`--teardown` flag**: `sudo autohotspot --teardown` flushes usb0 and forces a full DHCP → link-local setup cycle (for debugging / manual re-test)
+- Previously a leftover `169.254.1.1/16` from a prior run would cause a false "DHCP assigned" log, flush the working IP, and restart the whole 35s cycle
 
 ### v1.5 (2026-06-15)
 
