@@ -106,8 +106,12 @@ try_usb0() {
         log "usb0: ip link set up failed — continuing anyway"
     fi
 
+    # Use a throw-away lease file so dhclient always does a fresh DISCOVER
+    # rather than trying to renew a stale lease from a previous session.
+    local lease_file="/tmp/dhclient-usb0.leases"
+    rm -f "$lease_file"
     log "usb0: running dhclient (timeout=${USB_DHCP_TIMEOUT}s)"
-    run_logged "usb0/dhclient" timeout "$USB_DHCP_TIMEOUT" dhclient -1 -v "$USBDEV" || true
+    run_logged "usb0/dhclient" timeout "$USB_DHCP_TIMEOUT" dhclient -1 -v -lf "$lease_file" "$USBDEV" || true
 
     log_usb_state "after-dhclient"
 
