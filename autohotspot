@@ -1,7 +1,7 @@
 #!/bin/bash
 # =========================================================
 # autohotspot — DietPi boot fallback
-# v1.8
+# v1.9
 #
 # Boot-once. Bring up all non-conflicting interfaces:
 #   1. wlan0  — OS already tried; just check the result
@@ -152,15 +152,7 @@ try_usb0() {
 
     log_usb_state "after-reload"
 
-    # Carrier is the gate. No carrier = nothing enumerated → bail (state already
-    # logged). We do NOT discover or verify the peer — it reaches us at the
-    # static link-local address on its own.
-    if ! usb_has_carrier; then
-        log "usb0: no carrier after reload — nothing connected"
-        return 1
-    fi
-
-    log "usb0: carrier present — assigning ${USB_LINKLOCAL_IP}"
+    log "usb0: assigning ${USB_LINKLOCAL_IP}"
     if ! ip addr add "$USB_LINKLOCAL_IP" dev "$USBDEV" 2>/dev/null; then
         log "usb0: ${USB_LINKLOCAL_IP} already set"
     fi
@@ -207,7 +199,7 @@ start_ap() {
 
 # --- decide ----------------------------------------------
 log "========================================"
-log "=== autohotspot v1.8 — boot check ==="
+log "=== autohotspot v1.9 — boot check ==="
 log "========================================"
 
 wifi_ok=false

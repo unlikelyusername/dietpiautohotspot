@@ -12,7 +12,7 @@ Boot-once networking for a headless DietPi (Pi 5). On every boot, brings up all 
 
 ## Files
 
-- `autohotspot` — the script (v1.8)
+- `autohotspot` — the script (v1.9)
 - `autohotspot.service` — systemd unit
 - `install.sh` — one-command installer
 - `INSTALL.md` — setup guide
@@ -41,7 +41,7 @@ There is no early carrier check — usb0 timing at boot is unreliable (the kerne
 Mac has Internet Sharing on. Script runs `dhclient` with a 10-second timeout. If dhclient succeeds and usb0 has an IP, done.
 
 **2b — Link-local (iPad / Mac without Internet Sharing)**
-If DHCP fails, script reloads the USB gadget driver (`rmmod g_ether; modprobe g_ether`). This forces a fresh USB enumeration, after which the peer self-assigns a `169.254.x.x` address (RFC 5227). If carrier is then present, the script assigns its own static `169.254.1.1/16` and is done. It does **not** try to discover or ping the peer — on a point-to-point USB link the peer connects to the Pi at the known `169.254.1.1`, so there's nothing to discover. No carrier means nothing is connected, and usb0 is left unconfigured.
+If DHCP fails, script reloads the USB gadget driver (`rmmod g_ether; modprobe g_ether`). This forces a fresh USB enumeration, after which the peer self-assigns a `169.254.x.x` address (RFC 5227). The script then unconditionally assigns its own static `169.254.1.1/16` and is done. It does **not** try to discover or ping the peer — on a point-to-point USB link the peer connects to the Pi at the known `169.254.1.1`. If nothing is connected, `169.254.1.1/16` sits harmlessly on usb0 until something plugs in.
 
 If nothing responds (battery pack, nothing connected), usb0 is left unconfigured and the script continues.
 
@@ -125,6 +125,10 @@ Reboot with no known WiFi in range. Expected: AP comes up, phone connects to `Di
 **`update_config=1` in `wpa_supplicant.conf`** — allows wpa_supplicant to overwrite the config. Consider setting to `0` once stable.
 
 ## Appendix: changelog
+
+### v1.9 (2026-06-17)
+
+- **Remove carrier gate.** After g_ether reload, 169.254.1.1/16 is now assigned unconditionally — no `usb_has_carrier` check. The v1.8 check fired too early at boot (carrier=no at check time, but LOWER_UP visible in `ip a` seconds later), leaving usb0 without an IPv4 address even with an iPad connected. A disconnected usb0 holding 169.254.1.1/16 is harmless.
 
 ### v1.8 (2026-06-17)
 
