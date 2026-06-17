@@ -12,15 +12,18 @@ Boot-once networking for a headless DietPi (Pi 5). On every boot, brings up all 
 
 ## Files
 
-- `autohotspot` — the script (v1.4)
+- `autohotspot` — the script (v1.7)
 - `autohotspot.service` — systemd unit
-- `INSTALL.md` — complete setup guide for a fresh system
+- `install.sh` — one-command installer
+- `INSTALL.md` — setup guide
 
-**Runtime dependencies (installed on target, not in repo):**
-- `hostapd`, `dnsmasq`, `iw`
+**Runtime dependencies (installed by install.sh):**
+- `hostapd`, `dnsmasq`
 - `/etc/hostapd/hostapd.conf`
 - `/etc/dnsmasq.conf`
 - `/etc/wpa_supplicant/wpa_supplicant.conf` (managed by dietpi-config)
+
+`tcpdump` improves link-local peer discovery (iPad path) but is not required — the script falls back to `ip neigh` polling if absent.
 
 ---
 
@@ -37,10 +40,10 @@ The Pi presents as a USB Ethernet gadget (`g_ether`) on its USB-C port. This run
 There is no early carrier check — usb0 timing at boot is unreliable (the kernel creates the interface before it's properly enumerated). DHCP failure is the signal to move to link-local.
 
 **2a — DHCP uplink (Mac)**
-Mac has Internet Sharing on. Script runs `dhclient` with a 10-second timeout. If an IP and a pingable gateway appear, done.
+Mac has Internet Sharing on. Script runs `dhclient` with a 10-second timeout. If dhclient succeeds and usb0 has an IP, done.
 
-**2b — Link-local (iPad)**
-If DHCP fails, script reloads the USB gadget driver (`rmmod g_ether; modprobe g_ether`). This forces a fresh USB enumeration — iPadOS detects link-down/link-up, retries DHCP (fails, no server), then self-assigns a `169.254.x.x` address. Script assigns `169.254.1.1/16` on its end and polls the neighbour table for a pingable peer. If one appears within 20 seconds, done.
+**2b — Link-local (iPad / Mac without Internet Sharing)**
+If DHCP fails, script reloads the USB gadget driver (`rmmod g_ether; modprobe g_ether`). This forces a fresh USB enumeration — the peer retries DHCP (fails, no server), then self-assigns a `169.254.x.x` address. Script assigns `169.254.1.1/16` on its end and listens for ARP announcements via `tcpdump` (falls back to `ip neigh` polling if tcpdump absent). If a pingable peer appears within 20 seconds, done.
 
 If nothing responds (battery pack, nothing connected), usb0 is left unconfigured and the script continues.
 
@@ -124,10 +127,6 @@ Reboot with no known WiFi in range. Expected: AP comes up, phone connects to `Di
 **`wifi-restore.service`** — disabled 2026-06-14. Was failing every boot (read-only filesystem at that stage). Files still at `/usr/local/bin/emergency-wifi-restore` and `/root/wpa_supplicant.conf.golden`. Safe to delete.
 
 **`update_config=1` in `wpa_supplicant.conf`** — allows wpa_supplicant to overwrite the config. Consider setting to `0` once stable.
-
-**`tcpdump`** — installed during USB testing. Not a script dependency but useful for debugging.
-
----
 
 ## Appendix: changelog
 
