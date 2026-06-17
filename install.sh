@@ -27,8 +27,8 @@ apt-get install -y hostapd dnsmasq >/dev/null
 
 # --- disable auto-start of AP services ----------------------
 echo "[2/7] Configuring hostapd + dnsmasq..."
-systemctl disable hostapd dnsmasq 2>/dev/null || true
 systemctl unmask  hostapd dnsmasq 2>/dev/null || true
+systemctl disable hostapd dnsmasq 2>/dev/null || true
 
 # --- write config files (don't overwrite if already present) -
 echo "[3/7] Writing config files..."

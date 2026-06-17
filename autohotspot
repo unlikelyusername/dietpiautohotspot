@@ -1,7 +1,7 @@
 #!/bin/bash
 # =========================================================
 # autohotspot — DietPi boot fallback
-# v1.9
+# v1.10
 #
 # Boot-once. Bring up all non-conflicting interfaces:
 #   1. wlan0  — OS already tried; just check the result
@@ -162,6 +162,7 @@ try_usb0() {
 
 # --- tier 3: own AP --------------------------------------
 stop_client() {
+    run_logged "ap/stop-hostapd" systemctl stop hostapd || true
     run_logged "ap/ifdown" ifdown "$WIFIDEV" || true
     if [ -f "/run/wpa_supplicant.${WIFIDEV}.pid" ]; then
         local pid
@@ -199,7 +200,7 @@ start_ap() {
 
 # --- decide ----------------------------------------------
 log "========================================"
-log "=== autohotspot v1.9 — boot check ==="
+log "=== autohotspot v1.10 — boot check ==="
 log "========================================"
 
 wifi_ok=false

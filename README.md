@@ -12,7 +12,7 @@ Boot-once networking for a headless DietPi (Pi 5). On every boot, brings up all 
 
 ## Files
 
-- `autohotspot` — the script (v1.9)
+- `autohotspot` — the script (v1.10)
 - `autohotspot.service` — systemd unit
 - `install.sh` — one-command installer
 - `INSTALL.md` — setup guide
@@ -149,6 +149,12 @@ Reboot with no known WiFi in range. Expected: AP comes up, phone connects to `Di
 **`update_config=1` in `wpa_supplicant.conf`** — allows wpa_supplicant to overwrite the config. Consider setting to `0` once stable.
 
 ## Appendix: changelog
+
+### v1.10 (2026-06-17)
+
+- **Fix hostapd auto-starting before AP is configured.** `install.sh` was running `systemctl disable` before `systemctl unmask`. On DietPi, hostapd ships masked; disabling a masked service is a no-op, then unmask restored the package preset (`enabled`), leaving hostapd auto-starting at `network.target` — 17 seconds before `start_ap()` ran. The AP broadcast with no IP and no dnsmasq; connecting devices got no DHCP. Fixed: unmask first, then disable.
+- **Defense-in-depth:** `stop_client()` now stops hostapd explicitly before configuring the interface, so even existing installs with the bad symlink get a clean slate.
+- **Live-system fix for existing installs:** `sudo systemctl disable hostapd` (one-time, removes the stale symlink).
 
 ### v1.9 (2026-06-17)
 
