@@ -12,15 +12,18 @@ Boot-once networking for a headless DietPi (Pi 5). On every boot, brings up all 
 
 ## Files
 
-- `autohotspot` — the script (v1.4)
+- `autohotspot` — the script (v1.7)
 - `autohotspot.service` — systemd unit
-- `INSTALL.md` — complete setup guide for a fresh system
+- `install.sh` — one-command installer
+- `INSTALL.md` — setup guide
 
-**Runtime dependencies (installed on target, not in repo):**
-- `hostapd`, `dnsmasq`, `iw`
+**Runtime dependencies (installed by install.sh):**
+- `hostapd`, `dnsmasq`
 - `/etc/hostapd/hostapd.conf`
 - `/etc/dnsmasq.conf`
 - `/etc/wpa_supplicant/wpa_supplicant.conf` (managed by dietpi-config)
+
+`tcpdump` improves link-local peer discovery (iPad path) but is not required — the script falls back to `ip neigh` polling if absent.
 
 ---
 

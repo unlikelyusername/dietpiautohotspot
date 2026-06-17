@@ -1,25 +1,43 @@
 # Install
 
-This repo contains a script and service file. Everything else — packages, config files — must be set up on the target system. This document is the complete, reproducible setup for a fresh DietPi install.
-
-## 1. Install packages
-
 ```bash
-sudo apt install hostapd dnsmasq iw
+git clone https://github.com/unlikelyusername/dietpiautohotspot
+cd dietpiautohotspot
+sudo ./install.sh
 ```
 
-Both `hostapd` and `dnsmasq` must be disabled (not auto-started) but unmasked (startable on demand):
+Answer the two prompts (SSID + passphrase). The script installs everything and runs once to verify.
+
+**Pi 5 note**: if this is the first install, the USB gadget (`usb0`) config is written to `/boot/firmware/` — a reboot is required before `usb0` appears. The AP fallback (wlan0) works immediately.
+
+---
+
+## What install.sh does
+
+1. `apt install hostapd dnsmasq`
+2. `systemctl disable/unmask` both (they start on demand, not at boot)
+3. Creates `/etc/hostapd/hostapd.conf` with the SSID + passphrase you provided (skipped if already exists)
+4. Appends AP DHCP stanza to `/etc/dnsmasq.conf` (skipped if already present)
+5. Adds USB gadget config to `/boot/firmware/config.txt` and `cmdline.txt` (Pi 5 only; skipped if already present)
+6. Copies `autohotspot` to `/usr/bin/` and enables `autohotspot.service`
+7. Runs the script once and prints the log
+
+---
+
+## Manual reference
+
+If you prefer to do it by hand:
+
+### Packages
 
 ```bash
+sudo apt install hostapd dnsmasq
 sudo systemctl disable hostapd dnsmasq
 sudo systemctl unmask hostapd dnsmasq
 ```
 
-## 2. Create config files on the target system
+### `/etc/hostapd/hostapd.conf`
 
-These files are not in the repo — they contain credentials and are system-specific.
-
-**`/etc/hostapd/hostapd.conf`**
 ```
 interface=wlan0
 driver=nl80211
@@ -37,16 +55,10 @@ wpa_pairwise=TKIP
 rsn_pairwise=CCMP
 ```
 
-Change `ssid` and `wpa_passphrase` before deploying.
+### `/etc/dnsmasq.conf` — append:
 
-Verify hostapd will find its config:
-```bash
-cat /etc/default/hostapd | grep DAEMON_CONF
-# should show: DAEMON_CONF="/etc/hostapd/hostapd.conf"
 ```
-
-**`/etc/dnsmasq.conf`**
-```
+# --- autohotspot AP fallback ---
 interface=wlan0
 bind-dynamic
 server=8.8.8.8
@@ -57,23 +69,27 @@ dhcp-option=3,192.168.99.1
 dhcp-option=6,192.168.99.1
 ```
 
-The `AP_IP` in the script (`192.168.99.1`) must be on the same subnet as `dhcp-range`. If you change one, change both.
+The `AP_IP` in the script (`192.168.99.1`) must be on the same subnet as `dhcp-range`.
 
-**`/etc/wpa_supplicant/wpa_supplicant.conf`**
+### Pi 5 USB gadget (`/boot/firmware/config.txt`)
 
-Managed by `dietpi-config`. Add known networks there. The script reads this file but never modifies it.
+```
+[pi5]
+otg_mode=1
 
-**Remove any DietPi-managed usb0 config if present:**
-```bash
-sudo rm -f /etc/network/interfaces.d/usb0
+[all]
+dtoverlay=dwc2
 ```
 
-DietPi sometimes creates this. If present, it runs its own `dhclient` on `usb0` indefinitely, which conflicts with the script's USB tethering tier.
+### Pi 5 USB gadget (`/boot/firmware/cmdline.txt`)
 
-**USB cable for iPad tethering (Pi 5 specific):**
-Smart USB-C cables (Apple braided, Thunderbolt, USB4) break Pi 5 gadget mode TX silently. Use a cheap USB-C cable (no e-marker chip) or a USB-C → USB-A → USB-C adapter chain. See `autohotspot.md` for details.
+Append to the existing single line (no newline):
 
-## 3. Install the script and service
+```
+modules-load=dwc2,g_ether
+```
+
+### Script + service
 
 ```bash
 sudo cp autohotspot /usr/bin/autohotspot
@@ -83,19 +99,20 @@ sudo systemctl daemon-reload
 sudo systemctl enable autohotspot.service
 ```
 
-## 4. Verify
+### Verify
 
-Run the script manually before rebooting:
 ```bash
 sudo /usr/bin/autohotspot
 cat /var/log/autohotspot.log
 ```
 
-Then reboot and check:
+To force a full usb0 re-cycle (DHCP → link-local):
+
 ```bash
-sudo journalctl -b 0 | grep autohotspot
-cat /var/log/autohotspot.log
+sudo /usr/bin/autohotspot --teardown
 ```
+
+---
 
 ## Uninstall
 
@@ -105,4 +122,4 @@ sudo rm /etc/systemd/system/autohotspot.service
 sudo rm /usr/bin/autohotspot
 ```
 
-The script never modifies system config files. Nothing else to undo.
+The script never modifies system config files. Packages and config files installed by `install.sh` must be removed manually if desired.
