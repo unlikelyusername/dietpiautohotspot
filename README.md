@@ -56,6 +56,30 @@ If wlan0 didn't get a client IP, tears down wlan0, brings it up in AP mode at `1
 
 ---
 
+## Scenarios (use cases & test checklist)
+
+The six real-world connection situations, mapped to what the script does. These
+double as the manual test matrix — run each on the Pi and confirm the outcome.
+
+| # | Plugged in | usb0 outcome | Internet? | Reach the Pi at |
+|---|-----------|--------------|-----------|-----------------|
+| 1 | Mac, Internet Sharing **on** | DHCP → `192.168.2.x` | Yes (via Mac) | Mac-side usb0 IP (or wifi) |
+| 2 | Mac, Internet Sharing **off** | DHCP fails → reload → `169.254.1.1/16` | No | `169.254.1.1` over USB |
+| 3 | iPad, **good** (dumb) cable | DHCP fails → reload → `169.254.1.1/16`; iPad self-assigns `169.254.x.x` | No | `169.254.1.1` over USB |
+| 4 | iPad, **smart / e-marked** cable | usb0 appears but TX is broken by Power Delivery on the CC pin — no traffic passes | No | Not reachable — swap to a dumb cable |
+| 5 | Power bank, **known** wifi in range | `169.254.1.1/16` assigned harmlessly (no peer); wifi client succeeds | Yes (via wifi) | wifi IP |
+| 6 | Power bank, **no** known wifi | `169.254.1.1/16` harmless; wifi client fails → AP starts | AP only | `DietPi-Fallback` → `192.168.99.1` |
+
+This is the two-plane model in practice: rows **1 & 5** are *uplink* (the Pi gets
+internet), rows **2, 3 & 6** are *management* access (you reach the Pi to configure
+it, even with a dead wifi radio in 2/3), and row **4** is a known cable failure mode.
+
+**iPhone — not supported.** The Pi 5 draws more power than an iPhone supplies over
+USB, so it won't power/enumerate reliably. Use a Mac, an iPad, or a self-powered
+setup (power bank + wifi/AP).
+
+---
+
 ## Future extension: multi-interface routing
 
 When both wlan0 and usb0 are up simultaneously, Linux may have two default routes. Desired behaviour (not yet implemented):
